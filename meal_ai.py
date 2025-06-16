@@ -681,10 +681,9 @@ def update_menu_category(menu_name: str, category: str):
     conn.close()
 
 
-def get_seasonal_menus() -> List[Dict[str, Any]]:
+def get_seasonal_menus() -> list:
     """
     계절별 메뉴 추천을 위해 AI를 활용하여 메뉴 생성
-
     Returns:
         List[Dict[str, Any]]: 계절별 추천 메뉴 목록
     """
@@ -695,14 +694,12 @@ def get_seasonal_menus() -> List[Dict[str, Any]]:
         else (
             "여름"
             if 6 <= current_month <= 8
-            else "가을" if 9 <= current_month <= 11 else "겨울"
+            else ("가을" if 9 <= current_month <= 11 else "겨울")
         )
     )
-
     prompt = f"""
     {season}에 어울리는 한식 메뉴 5개를 추천해주세요.
     계절에 맞는 제철 식재료를 활용한 메뉴여야 합니다.
-    
     응답 형식:
     [
         {{
@@ -718,10 +715,22 @@ def get_seasonal_menus() -> List[Dict[str, Any]]:
         ...
     ]
     """
-
     try:
         response = model.generate_content(prompt)
-        menus = json.loads(response.text)
+        import re
+
+        json_str = re.search(r"```json\\n(.*?)\\n```", response.text, re.DOTALL)
+        if json_str:
+            menus = json.loads(json_str.group(1))
+        else:
+            menus = json.loads(response.text)
+        # 필수 필드 보정
+        for menu in menus:
+            for field in ["calories", "protein", "fat", "carbs", "sodium"]:
+                try:
+                    menu[field] = int(float(str(menu[field]).replace(",", "")))
+                except Exception:
+                    menu[field] = 0
         return menus
     except Exception as e:
         print(f"계절별 메뉴 생성 중 오류 발생: {str(e)}")
@@ -731,187 +740,165 @@ def get_seasonal_menus() -> List[Dict[str, Any]]:
 def optimize_nutrition_balance(plan_df: pd.DataFrame) -> pd.DataFrame:
     """
     식단 계획의 영양 균형을 최적화
-
     Args:
         plan_df (pd.DataFrame): 현재 식단 계획
-
     Returns:
         pd.DataFrame: 최적화된 식단 계획
     """
-    # 현재 영양 정보 분석
-    current_nutrition = analyze_menu_plan(plan_df)
-    daily_nutrition = current_nutrition.groupby("요일").agg(
-        {
-            "calories": "sum",
-            "protein": "sum",
-            "fat": "sum",
-            "carbs": "sum",
-            "sodium": "sum",
+    try:
+        # 현재 영양 정보 분석
+        current_nutrition = analyze_menu_plan(plan_df)
+        daily_nutrition = current_nutrition.groupby("요일").agg(
+            {
+                "칼로리": "sum",
+                "단백질": "sum",
+                "지방": "sum",
+                "탄수화물": "sum",
+                "나트륨": "sum",
+            }
+        )
+        # 목표 영양소 기준
+        target_nutrition = {
+            "칼로리": 2000,
+            "단백질": 60,
+            "지방": 65,
+            "탄수화물": 250,
+            "나트륨": 2000,
         }
-    )
-
-    # 목표 영양소 기준
-    target_nutrition = {
-        "calories": 2000,  # 일일 권장 칼로리
-        "protein": 60,  # 일일 권장 단백질(g)
-        "fat": 65,  # 일일 권장 지방(g)
-        "carbs": 250,  # 일일 권장 탄수화물(g)
-        "sodium": 2000,  # 일일 권장 나트륨(mg)
-    }
-
-    # 영양소 균형이 맞지 않는 요일 찾기
-    imbalanced_days = []
-    for day in daily_nutrition.index:
-        day_nutrition = daily_nutrition.loc[day]
-        if any(
-            abs(day_nutrition[nutrient] - target_nutrition[nutrient])
-            / target_nutrition[nutrient]
-            > 0.2
-            for nutrient in target_nutrition
-        ):
-            imbalanced_days.append(day)
-
-    # 균형이 맞지 않는 요일의 메뉴 최적화
-    for day in imbalanced_days:
-        day_nutrition = daily_nutrition.loc[day]
-        for nutrient in target_nutrition:
-            if day_nutrition[nutrient] < target_nutrition[nutrient] * 0.8:
-                # 부족한 영양소를 보완할 수 있는 메뉴 찾기
-                alternative_menus = get_all_menus()
-                alternative_menus = alternative_menus[
-                    alternative_menus[nutrient] > day_nutrition[nutrient] / 3
-                ]
-                if not alternative_menus.empty:
-                    # 현재 메뉴와 다른 카테고리의 메뉴 선택
-                    current_categories = set(
-                        plan_df.loc[plan_df["요일"] == day].iloc[0].drop("요일").values
-                    )
+        # 영양소 균형이 맞지 않는 요일 찾기
+        imbalanced_days = []
+        for day in daily_nutrition.index:
+            day_nutrition = daily_nutrition.loc[day]
+            if any(
+                abs(day_nutrition[nutrient] - target_nutrition[nutrient])
+                / target_nutrition[nutrient]
+                > 0.2
+                for nutrient in target_nutrition
+            ):
+                imbalanced_days.append(day)
+        # 균형이 맞지 않는 요일의 메뉴 최적화
+        for day in imbalanced_days:
+            day_nutrition = daily_nutrition.loc[day]
+            for nutrient in target_nutrition:
+                if day_nutrition[nutrient] < target_nutrition[nutrient] * 0.8:
+                    alternative_menus = get_all_menus()
                     alternative_menus = alternative_menus[
-                        ~alternative_menus["category"].isin(current_categories)
+                        alternative_menus[nutrient] > day_nutrition[nutrient] / 3
                     ]
                     if not alternative_menus.empty:
-                        new_menu = alternative_menus.sample(1).iloc[0]
-                        # 메뉴 교체
-                        for col in plan_df.columns:
-                            if (
-                                col != "요일"
-                                and plan_df.loc[plan_df["요일"] == day, col].iloc[0]
-                                in current_categories
-                            ):
-                                plan_df.loc[plan_df["요일"] == day, col] = new_menu[
-                                    "name"
-                                ]
-                                break
-
-    return plan_df
+                        current_categories = set(
+                            plan_df.loc[plan_df["요일"] == day]
+                            .iloc[0]
+                            .drop("요일")
+                            .values
+                        )
+                        alternative_menus = alternative_menus[
+                            ~alternative_menus["category"].isin(current_categories)
+                        ]
+                        if not alternative_menus.empty:
+                            new_menu = alternative_menus.sample(1).iloc[0]
+                            for col in plan_df.columns:
+                                if (
+                                    col != "요일"
+                                    and plan_df.loc[plan_df["요일"] == day, col].iloc[0]
+                                    in current_categories
+                                ):
+                                    plan_df.loc[plan_df["요일"] == day, col] = new_menu[
+                                        "name"
+                                    ]
+                                    break
+        return plan_df
+    except Exception as e:
+        print(f"영양 균형 최적화 중 오류 발생: {str(e)}")
+        return plan_df
 
 
 def manage_menu_diversity(plan_df: pd.DataFrame) -> pd.DataFrame:
     """
     메뉴의 다양성을 관리하고 중복을 최소화
-
     Args:
         plan_df (pd.DataFrame): 현재 식단 계획
-
     Returns:
         pd.DataFrame: 다양성이 개선된 식단 계획
     """
-    # 메뉴 사용 빈도 계산
-    menu_counts = {}
-    for col in plan_df.columns:
-        if col != "요일":
-            for menu in plan_df[col]:
-                menu_counts[menu] = menu_counts.get(menu, 0) + 1
-
-    # 2회 이상 사용된 메뉴 찾기
-    overused_menus = {menu: count for menu, count in menu_counts.items() if count >= 2}
-
-    # 중복 메뉴 교체
-    for menu, count in overused_menus.items():
-        # 대체 가능한 메뉴 찾기
-        menu_category = get_all_menus()[get_all_menus()["name"] == menu][
-            "category"
-        ].iloc[0]
-        alternative_menus = get_all_menus()[
-            (get_all_menus()["category"] == menu_category)
-            & (get_all_menus()["name"] != menu)
-        ]
-
-        if not alternative_menus.empty:
-            # 중복 메뉴가 있는 위치 찾기
-            for col in plan_df.columns:
-                if col != "요일":
-                    for idx in plan_df[plan_df[col] == menu].index:
-                        new_menu = alternative_menus.sample(1).iloc[0]["name"]
-                        plan_df.at[idx, col] = new_menu
-
-    return plan_df
+    try:
+        menu_counts = {}
+        for col in plan_df.columns:
+            if col != "요일":
+                for menu in plan_df[col]:
+                    menu_counts[menu] = menu_counts.get(menu, 0) + 1
+        overused_menus = {
+            menu: count for menu, count in menu_counts.items() if count >= 2
+        }
+        for menu, count in overused_menus.items():
+            menu_category = get_all_menus()[get_all_menus()["name"] == menu][
+                "category"
+            ].iloc[0]
+            alternative_menus = get_all_menus()[
+                (get_all_menus()["category"] == menu_category)
+                & (get_all_menus()["name"] != menu)
+            ]
+            if not alternative_menus.empty:
+                for col in plan_df.columns:
+                    if col != "요일":
+                        for idx in plan_df[plan_df[col] == menu].index:
+                            new_menu = alternative_menus.sample(1).iloc[0]["name"]
+                            plan_df.at[idx, col] = new_menu
+        return plan_df
+    except Exception as e:
+        print(f"메뉴 다양성 관리 중 오류 발생: {str(e)}")
+        return plan_df
 
 
 def generate_monthly_report(plan_df: pd.DataFrame) -> str:
     """
     월간 식단 보고서 생성
-
     Args:
         plan_df (pd.DataFrame): 식단 계획 데이터
-
     Returns:
         str: 생성된 보고서 파일 경로
     """
-    # 보고서 디렉토리 생성
-    os.makedirs("reports", exist_ok=True)
-
-    # 파일 경로 설정
-    filepath = os.path.join(
-        "reports", f"월간_식단_보고서_{datetime.now().strftime('%Y%m')}.xlsx"
-    )
-
-    # Excel 작성기 생성
-    with pd.ExcelWriter(filepath, engine="xlsxwriter") as writer:
-        # 기본 식단 계획
-        plan_df.to_excel(writer, sheet_name="식단 계획", index=False)
-
-        # 영양 정보 분석
-        nutrition_df = analyze_menu_plan(plan_df)
-        nutrition_df.to_excel(writer, sheet_name="영양 정보", index=False)
-
-        # 메뉴 사용 통계
-        menu_stats = pd.DataFrame()
-        for col in plan_df.columns:
-            if col != "요일":
-                menu_counts = plan_df[col].value_counts()
-                menu_stats[col] = menu_counts
-
-        menu_stats.to_excel(writer, sheet_name="메뉴 사용 통계")
-
-        # 영양소 목표 달성률
-        daily_nutrition = nutrition_df.groupby("요일").agg(
-            {
-                "calories": "sum",
-                "protein": "sum",
-                "fat": "sum",
-                "carbs": "sum",
-                "sodium": "sum",
-            }
+    try:
+        os.makedirs("reports", exist_ok=True)
+        filepath = os.path.join(
+            "reports", f"월간_식단_보고서_{datetime.now().strftime('%Y%m')}.xlsx"
         )
-
-        target_nutrition = {
-            "calories": 2000,
-            "protein": 60,
-            "fat": 65,
-            "carbs": 250,
-            "sodium": 2000,
-        }
-
-        achievement_rate = pd.DataFrame()
-        for nutrient in target_nutrition:
-            achievement_rate[nutrient] = (
-                daily_nutrition[nutrient] / target_nutrition[nutrient] * 100
-            ).round(1)
-
-        achievement_rate.to_excel(writer, sheet_name="영양소 목표 달성률")
-
-    return filepath
+        with pd.ExcelWriter(filepath, engine="xlsxwriter") as writer:
+            plan_df.to_excel(writer, sheet_name="식단 계획", index=False)
+            nutrition_df = analyze_menu_plan(plan_df)
+            nutrition_df.to_excel(writer, sheet_name="영양 정보", index=False)
+            menu_stats = pd.DataFrame()
+            for col in plan_df.columns:
+                if col != "요일":
+                    menu_counts = plan_df[col].value_counts()
+                    menu_stats[col] = menu_counts
+            menu_stats.to_excel(writer, sheet_name="메뉴 사용 통계")
+            daily_nutrition = nutrition_df.groupby("요일").agg(
+                {
+                    "칼로리": "sum",
+                    "단백질": "sum",
+                    "지방": "sum",
+                    "탄수화물": "sum",
+                    "나트륨": "sum",
+                }
+            )
+            target_nutrition = {
+                "칼로리": 2000,
+                "단백질": 60,
+                "지방": 65,
+                "탄수화물": 250,
+                "나트륨": 2000,
+            }
+            achievement_rate = pd.DataFrame()
+            for nutrient in target_nutrition:
+                achievement_rate[nutrient] = (
+                    daily_nutrition[nutrient] / target_nutrition[nutrient] * 100
+                ).round(1)
+            achievement_rate.to_excel(writer, sheet_name="영양소 목표 달성률")
+        return filepath
+    except Exception as e:
+        print(f"월간 보고서 생성 중 오류 발생: {str(e)}")
+        return ""
 
 
 def auto_update_menu_db():
@@ -921,52 +908,50 @@ def auto_update_menu_db():
     - 계절별 메뉴 업데이트
     - 인기도 기반 메뉴 관리
     """
-    # 계절별 메뉴 추가
-    seasonal_menus = get_seasonal_menus()
-    for menu in seasonal_menus:
-        if menu["name"] not in set(get_all_menus()["name"]):
-            add_menu(menu)
-
-    # 트렌드 메뉴 생성
-    prompt = """
-    최근 인기 있는 한식 메뉴 5개를 추천해주세요.
-    트렌디하고 현대적인 메뉴여야 합니다.
-    
-    응답 형식:
-    [
-        {{
-            "name": "메뉴이름",
-            "category": "국/수프|메인|사이드|밥",
-            "calories": 숫자,
-            "protein": 숫자,
-            "fat": 숫자,
-            "carbs": 숫자,
-            "sodium": 숫자,
-            "trend_reason": "인기 이유"
-        }},
-        ...
-    ]
-    """
-
     try:
+        seasonal_menus = get_seasonal_menus()
+        for menu in seasonal_menus:
+            if menu["name"] not in set(get_all_menus()["name"]):
+                add_menu(menu)
+        prompt = """
+        최근 인기 있는 한식 메뉴 5개를 추천해주세요.
+        트렌디하고 현대적인 메뉴여야 합니다.
+        응답 형식:
+        [
+            {{
+                "name": "메뉴이름",
+                "category": "국/수프|메인|사이드|밥",
+                "calories": 숫자,
+                "protein": 숫자,
+                "fat": 숫자,
+                "carbs": 숫자,
+                "sodium": 숫자,
+                "trend_reason": "인기 이유"
+            }},
+            ...
+        ]
+        """
         response = model.generate_content(prompt)
-        trend_menus = json.loads(response.text)
+        import re
+
+        json_str = re.search(r"```json\\n(.*?)\\n```", response.text, re.DOTALL)
+        if json_str:
+            trend_menus = json.loads(json_str.group(1))
+        else:
+            trend_menus = json.loads(response.text)
         for menu in trend_menus:
             if menu["name"] not in set(get_all_menus()["name"]):
                 add_menu(menu)
+        menu_usage = pd.DataFrame()
+        for col in get_all_menus().columns:
+            if col != "name":
+                menu_usage[col] = get_all_menus()[col].value_counts()
+        unused_menus = menu_usage[menu_usage.sum(axis=1) == 0].index
+        for menu in unused_menus:
+            delete_menu(menu)
     except Exception as e:
-        print(f"트렌드 메뉴 생성 중 오류 발생: {str(e)}")
-
-    # 인기도가 낮은 메뉴 제거 (선택적)
-    menu_usage = pd.DataFrame()
-    for col in get_all_menus().columns:
-        if col != "name":
-            menu_usage[col] = get_all_menus()[col].value_counts()
-
-    # 3개월 이상 사용되지 않은 메뉴 제거
-    unused_menus = menu_usage[menu_usage.sum(axis=1) == 0].index
-    for menu in unused_menus:
-        delete_menu(menu)
+        print(f"메뉴 DB 자동 업데이트 중 오류 발생: {str(e)}")
+        return
 
 
 if __name__ == "__main__":

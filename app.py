@@ -12,6 +12,11 @@ from meal_ai import (
     update_menu_category,
     bulk_add,
     classify_menu,
+    get_seasonal_menus,
+    optimize_nutrition_balance,
+    manage_menu_diversity,
+    generate_monthly_report,
+    auto_update_menu_db,
 )
 import os
 import google.generativeai as genai
@@ -72,9 +77,7 @@ with tab1:
 # 메뉴 DB 탭
 with tab2:
     st.header("메뉴 데이터베이스 관리")
-
-    # 메뉴 DB 서브탭
-    db_tabs = st.tabs(["메뉴 추가", "메뉴 목록", "메뉴 DB 자동 업데이트"])
+    db_tabs = st.tabs(["메뉴 추가", "메뉴 목록"])
 
     with db_tabs[0]:
         st.subheader("새 메뉴 추가")
@@ -195,33 +198,6 @@ with tab2:
                     st.rerun()
         else:
             st.info("등록된 메뉴가 없습니다.")
-
-    with db_tabs[2]:
-        st.subheader("메뉴 DB 자동 업데이트")
-
-        if st.button("계절별 메뉴 추가"):
-            seasonal_menus = get_seasonal_menus()
-            added_count = 0
-            for menu in seasonal_menus:
-                if menu["name"] not in set(get_all_menus()["name"]):
-                    add_menu(menu)
-                    added_count += 1
-            st.success(f"{added_count}개의 계절별 메뉴가 추가되었습니다.")
-
-        if st.button("트렌드 메뉴 업데이트"):
-            auto_update_menu_db()
-            st.success("메뉴 DB가 업데이트되었습니다.")
-
-        if st.button("미사용 메뉴 정리"):
-            menu_usage = pd.DataFrame()
-            for col in get_all_menus().columns:
-                if col != "name":
-                    menu_usage[col] = get_all_menus()[col].value_counts()
-
-            unused_menus = menu_usage[menu_usage.sum(axis=1) == 0].index
-            for menu in unused_menus:
-                delete_menu(menu)
-            st.success(f"{len(unused_menus)}개의 미사용 메뉴가 제거되었습니다.")
 
 # 메뉴판 분석 탭
 with tab3:
@@ -353,67 +329,18 @@ with tab3:
                 if not merged_df.empty:
                     st.write("병합된 데이터:")
                     st.dataframe(merged_df)
-
-                    # 분석 옵션
-                    analysis_options = st.multiselect(
-                        "분석 옵션",
-                        [
-                            "영양 정보 분석",
-                            "영양 균형 최적화",
-                            "메뉴 다양성 관리",
-                            "월간 보고서 생성",
-                        ],
-                        default=["영양 정보 분석"],
-                    )
-
-                    if st.button("선택한 분석 실행"):
-                        try:
-                            # 영양 정보 분석
-                            if "영양 정보 분석" in analysis_options:
-                                nutrition_df = analyze_menu_plan(merged_df)
-                                st.success("영양 정보 분석이 완료되었습니다.")
-                                st.dataframe(nutrition_df)
-
-                            # 영양 균형 최적화
-                            if "영양 균형 최적화" in analysis_options:
-                                optimized_df = optimize_nutrition_balance(merged_df)
-                                st.success("영양 균형이 최적화되었습니다.")
-                                st.dataframe(optimized_df)
-                                merged_df = optimized_df
-
-                            # 메뉴 다양성 관리
-                            if "메뉴 다양성 관리" in analysis_options:
-                                diverse_df = manage_menu_diversity(merged_df)
-                                st.success("메뉴 다양성이 개선되었습니다.")
-                                st.dataframe(diverse_df)
-                                merged_df = diverse_df
-
-                            # 월간 보고서 생성
-                            if "월간 보고서 생성" in analysis_options:
-                                report_path = generate_monthly_report(merged_df)
-                                st.success("월간 보고서가 생성되었습니다.")
-                                with open(report_path, "rb") as f:
-                                    st.download_button(
-                                        label="월간 보고서 다운로드",
-                                        data=f,
-                                        file_name=os.path.basename(report_path),
-                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    )
-
-                            # Excel 파일로 내보내기
-                            filepath = export_plan(merged_df, "식단_계획")
-                            with open(filepath, "rb") as f:
-                                st.download_button(
-                                    label="Excel 파일 다운로드",
-                                    data=f,
-                                    file_name=os.path.basename(filepath),
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                )
-                        except Exception as e:
-                            st.error(f"분석 실행 중 오류 발생: {str(e)}")
-                            import traceback
-
-                            st.error(f"상세 오류: {traceback.format_exc()}")
+                    if st.button("영양 정보 분석"):
+                        nutrition_df = analyze_menu_plan(merged_df)
+                        st.success("영양 정보 분석이 완료되었습니다.")
+                        st.dataframe(nutrition_df)
+                        filepath = export_plan(merged_df, "식단_계획")
+                        with open(filepath, "rb") as f:
+                            st.download_button(
+                                label="Excel 파일 다운로드",
+                                data=f,
+                                file_name=os.path.basename(filepath),
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            )
                 else:
                     st.error("유효한 데이터가 없습니다.")
 
